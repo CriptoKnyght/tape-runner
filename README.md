@@ -1,6 +1,6 @@
-# Tape Runner
+# Can You Profit?
 
-A browser game about building a trading bot. Real 1-minute crypto candles replay bar by bar while your
+Think you can beat the market? On its worst day? A browser game about building a trading bot. Real 1-minute crypto candles replay bar by bar while your
 strategy trades them; earn profit to unlock markets, strategies, checks and exits.
 
 Play: https://criptoknyght.github.io/tape-runner/

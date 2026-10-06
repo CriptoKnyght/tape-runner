@@ -1,4 +1,5 @@
-<link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#0B0E13"><link rel="icon" href="icon-192.png"><link rel="apple-touch-icon" href="icon-192.png"><title>Tape Runner</title>
+<meta charset="utf-8">
+<link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#0B0E13"><link rel="icon" href="icon-192.png"><link rel="apple-touch-icon" href="icon-192.png"><title>Can You Profit?</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
@@ -365,7 +366,7 @@ body.in-campaign .rail li:not(.hit){display:none}
 
 <div class="wrap">
   <header>
-    <div class="brand"><span class="tape" aria-hidden="true"><i></i><i></i><i></i></span>Tape Runner</div>
+    <div class="brand"><span class="tape" aria-hidden="true"><i></i><i></i><i></i></span>Can You Profit?</div>
     <div class="modesw" role="group" aria-label="Mode"><button type="button" id="deskBtn" aria-pressed="false" title="Back to the desk of the market you played last">Desk</button><button type="button" id="mkBtn" aria-pressed="true">Markets</button><button type="button" id="ulBtn" aria-pressed="false">Unlocks</button><button type="button" id="sbBtn" aria-pressed="false">Sandbox</button></div>
     <span id="contractChip" hidden></span>
     <div class="hgroup" id="sandboxCtl">
@@ -2947,7 +2948,7 @@ function saveDialog(){
 function importSave(){
   try {
     const s = JSON.parse($("saveText").value);
-    if (!s.save || !Array.isArray(s.save.features)) throw new Error("not a Tape Runner save");
+    if (!s.save || !Array.isArray(s.save.features)) throw new Error("not a Can You Profit? save");
     if (![2, 3, 4].includes(s.save.v)) throw new Error("it's from an older campaign version");
     store.set(SAVE_KEY, s); loadSave(); persist(); closeModal(); selNode = null; showCampaign(); toast("Save loaded", Core.totalMedals(SAVE) + " medals");
   } catch (e) { $("saveMsg").textContent = "That code didn't load: " + e.message + "."; }

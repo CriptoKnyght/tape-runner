@@ -1,6 +1,6 @@
 {
-  "name": "Tape Runner",
-  "short_name": "Tape Runner",
+  "name": "Can You Profit?",
+  "short_name": "Can You Profit",
   "description": "Build a trading bot on real market history",
   "start_url": "./",
   "scope": "./",
