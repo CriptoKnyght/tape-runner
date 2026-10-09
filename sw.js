@@ -1,4 +1,4 @@
-const CACHE = "tape-runner-924b421343";
+const CACHE = "tape-runner-fc6389559d";
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(["./", "manifest.webmanifest", "icon-192.png", "icon-512.png"]))); self.skipWaiting(); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && k.startsWith("tape-runner-")).map(k => caches.delete(k))))); self.clients.claim(); });
 self.addEventListener("fetch", e => {
