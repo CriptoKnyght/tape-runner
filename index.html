@@ -190,6 +190,10 @@ body.in-campaign .howto{display:none}
 .lockednote{margin:0;font-size:12px}
 .term{text-decoration:underline dotted;text-decoration-color:var(--muted);text-underline-offset:3px;cursor:help}
 .vocabpick{display:inline-flex;align-items:center;gap:6px}
+.sndctl{display:inline-flex;align-items:center;gap:6px}
+.sndctl input[type=range]{width:84px;accent-color:var(--long)}
+.sndbtn{display:inline-grid;place-items:center;width:30px;padding:0}
+.sndbtn.off{color:var(--muted)} .sndbtn.off .w{display:none}
 .tabn{display:inline-grid;place-items:center;min-width:16px;height:16px;margin-left:4px;padding:0 4px;border-radius:8px;background:var(--gold);color:#0B0E13;font:700 10px/1 var(--mono);font-style:normal;vertical-align:1px}
 body.in-campaign .rail li:not(.hit){display:none}
 .ctrl input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--long);margin:0}
@@ -383,7 +387,11 @@ body.in-campaign .rail li:not(.hit){display:none}
     <span class="chipx" id="medalChip" hidden></span>
     <span class="chipx" id="bankChip" hidden>Bank $0</span>
     <button type="button" class="btn small" id="helpBtn" title="Show the guide for this screen" aria-label="Show the guide for this screen">?</button>
-    <label class="toggle"><input type="checkbox" id="sound"> Sound</label>
+    <div class="sndctl" role="group" aria-label="Sound">
+      <button type="button" class="btn small sndbtn" id="sndBtn" aria-pressed="true" title="Sound on/off" aria-label="Sound on/off"><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 8h3l4-3v10l-4-3H3z" fill="currentColor"/><path class="w" d="M13 7.5a3.5 3.5 0 0 1 0 5M15 5.5a6.5 6.5 0 0 1 0 9" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></button>
+      <input type="range" id="sndVol" min="0" max="100" step="1" aria-label="Volume">
+      <button type="button" class="btn small" id="sndPrev" title="Play one of every sound">Sounds</button>
+    </div>
   </header>
 
   <section class="camp" id="campaign" hidden aria-label="Campaign">
@@ -1318,6 +1326,163 @@ const store = {
   get(k){ try { return JSON.parse(localStorage.getItem(k)); } catch(e){ return null; } },
   set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
 };
+/* ================= sound (inlined inside the page's main closure, before campaign_ui.js) =================
+   Every sound is synthesized: one palette (D major pentatonic, soft sine/triangle voices, a little room), one recipe
+   per category, and a mix where importance sets loudness. Categories:
+     ui      every button, tab, toggle, slider step, card, modal        nearly silent ticks
+     tape    bars going by during a run (rate-limited)                  a faint pulse, pitch follows price
+     signal  indicator events, condition lights                         small glassy pings
+     trade   entry (long rises, short falls), win, loss, stop, lock     warm, never harsh
+     profit  counting up, new highs                                     soft coin ticks, a shimmer
+     reward  medal pace, medals, unlocks, discoveries                   the only bright moments
+     warn    locked/disabled, out of the medals, liquidation            low and muted
+   Pitch and size carry meaning inside a category (a bigger win rings higher); the recipe never changes. */
+const SND = (() => {
+  const BUS = { ui: .16, tape: .07, signal: .2, trade: .42, profit: .26, reward: .55, warn: .32 };
+  const ROOT = 293.66;                                    // D4
+  const PENT = [0, 2, 4, 7, 9];
+  const note = i => ROOT * Math.pow(2, (Math.floor(i / 5) * 12 + PENT[((i % 5) + 5) % 5]) / 12);   // i-th step of the scale
+  let ac = null, out = null, verb = null, buses = {}, noiseBuf = null, OFF = 0;   // OFF: start offset when rendering offline
+  let cfg = Object.assign({ on: true, vol: 70 }, store.get("taperunner.sound") || {});
+  const last = {};
+  const LOG = (() => { try { return localStorage.getItem("taperunner.sndlog") === "1"; } catch (e) { return false; } })();   // tests only; storage may be blocked
+  if (LOG) window.__snd = [];
+
+  function start(offline) {                                // audio may only start inside a user gesture
+    if (ac && !offline) { if (ac.state === "suspended") ac.resume(); return; }
+    ac = offline || new (window.AudioContext || window.webkitAudioContext)();
+    const comp = ac.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 4; comp.attack.value = .003; comp.release.value = .2;
+    out = ac.createGain(); out.connect(comp).connect(ac.destination);
+    verb = ac.createConvolver(); verb.buffer = impulse(1.6); const vret = ac.createGain(); vret.gain.value = .22; verb.connect(vret).connect(out);
+    Object.keys(BUS).forEach(k => { buses[k] = ac.createGain(); buses[k].gain.value = BUS[k]; buses[k].connect(out); });
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * .5, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    applyVol();
+  }
+  function impulse(sec) {
+    const n = Math.floor(ac.sampleRate * sec), b = ac.createBuffer(2, n, ac.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3); }
+    return b;
+  }
+  function applyVol() { if (out) out.gain.value = cfg.on ? Math.pow(cfg.vol / 100, 1.6) * .9 : 0; }
+  const ready = () => ac && cfg.on && cfg.vol > 0;
+  const throttle = (key, ms) => { const t = performance.now(); if (last[key] && t - last[key] < ms) return false; last[key] = t; return true; };
+
+  // one voice: oscillator -> lowpass -> envelope -> bus (+ room send)
+  function tone(bus, f, { type = "sine", at = 0, a = .005, d = .18, g = .5, glide = 0, lp = 6000, room = .1 } = {}) {
+    const t0 = ac.currentTime + OFF + at, o = ac.createOscillator(), fl = ac.createBiquadFilter(), e = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t0); if (glide) o.frequency.exponentialRampToValueAtTime(f * glide, t0 + d);
+    fl.type = "lowpass"; fl.frequency.value = lp;
+    e.gain.setValueAtTime(.0001, t0); e.gain.exponentialRampToValueAtTime(g, t0 + a); e.gain.exponentialRampToValueAtTime(.0001, t0 + a + d);
+    o.connect(fl).connect(e).connect(buses[bus]);
+    if (room) { const s = ac.createGain(); s.gain.value = room; e.connect(s).connect(verb); }
+    o.start(t0); o.stop(t0 + a + d + .05);
+  }
+  function noise(bus, { at = 0, d = .02, g = .4, bp = 3000, q = 1.2, sweep = 0, room = 0 } = {}) {
+    const t0 = ac.currentTime + OFF + at, s = ac.createBufferSource(), fl = ac.createBiquadFilter(), e = ac.createGain();
+    s.buffer = noiseBuf; fl.type = "bandpass"; fl.frequency.setValueAtTime(bp, t0); fl.Q.value = q;
+    if (sweep) fl.frequency.exponentialRampToValueAtTime(bp * sweep, t0 + d);
+    e.gain.setValueAtTime(.0001, t0); e.gain.exponentialRampToValueAtTime(g, t0 + .004); e.gain.exponentialRampToValueAtTime(.0001, t0 + d);
+    s.connect(fl).connect(e).connect(buses[bus]);
+    if (room) { const r = ac.createGain(); r.gain.value = room; e.connect(r).connect(verb); }
+    s.start(t0); s.stop(t0 + d + .05);
+  }
+  const bell = (bus, f, at, g = .5, d = .9) => { tone(bus, f, { at, d, g, room: .3 }); tone(bus, f * 2.01, { at, d: d * .5, g: g * .25, room: .3 }); tone(bus, f * 3.02, { at, d: d * .25, g: g * .1, room: .2 }); };
+
+  const R = {
+    // interface: tiny, dry, the same family everywhere
+    "ui.click": () => { noise("ui", { d: .02, g: .7, bp: 3200 }); tone("ui", 1760, { d: .03, g: .22, room: 0 }); },
+    "ui.primary": () => { noise("ui", { d: .02, g: .4, bp: 2600 }); tone("ui", note(9), { d: .07, g: .07, room: .05 }); tone("ui", note(11), { at: .045, d: .09, g: .06, room: .05 }); },
+    "ui.tab": () => { tone("ui", note(10), { d: .06, g: .1, glide: 1.5, room: .04 }); },
+    "ui.on": () => { tone("ui", note(11), { d: .05, g: .09, room: 0 }); },
+    "ui.off": () => { tone("ui", note(8), { d: .05, g: .08, room: 0 }); },
+    "ui.slider": p => { tone("ui", 500 + 700 * (p || 0), { d: .018, g: .14, room: 0 }); },
+    "ui.open": () => { noise("ui", { d: .16, g: .18, bp: 700, sweep: 3, q: .8, room: .1 }); },
+    "ui.close": () => { noise("ui", { d: .12, g: .14, bp: 1800, sweep: .35, q: .8 }); },
+    "ui.deny": () => { tone("warn", 155, { type: "triangle", d: .08, g: .12, lp: 900, room: 0 }); },
+    // tape: the market breathing
+    "tape.tick": up => { tone("tape", up ? 1240 : 1100, { d: .014, g: .2, room: 0 }); },
+    // signals: glass
+    "signal.ping": lvl => { const f = note(10 + Math.min(4, lvl | 0)); tone("signal", f, { d: .26, g: .3, room: .25 }); tone("signal", f * 2, { type: "triangle", d: .12, g: .06, room: .2 }); },
+    "signal.lamp": j => { tone("signal", note(12 + (j % 5)), { d: .07, g: .14, room: .1 }); },
+    // trades: warm, readable
+    "trade.entry": side => { const up = side !== "SHORT";            // long: a step up, short: a step down
+      tone("trade", note(up ? 5 : 9), { type: "triangle", d: .12, g: .45, lp: 2400, room: .12 }); tone("trade", note(up ? 9 : 5), { type: "triangle", at: .07, d: .2, g: .4, lp: 2400, room: .15 }); },
+    "trade.win": size => { const lift = Math.min(4, Math.floor((size || 0) * 400)); [0, 2, 4].forEach((s, k) => tone("trade", note(7 + lift + s), { at: k * .06, d: .25 + k * .05, g: .38, room: .2 }));
+      if (lift >= 2) noise("trade", { at: .12, d: .25, g: .08, bp: 7000, q: .6, room: .3 }); },
+    "trade.loss": () => { tone("trade", note(2), { d: .16, g: .32, lp: 900, room: .08 }); tone("trade", note(0), { at: .08, d: .26, g: .3, lp: 700, room: .08 }); },
+    "trade.stop": () => { noise("trade", { d: .05, g: .3, bp: 900, q: 1 }); tone("trade", note(0) / 2, { d: .22, g: .35, lp: 600, room: .05 }); },
+    "trade.lock": () => { noise("trade", { d: .015, g: .3, bp: 4000 }); tone("trade", note(12), { at: .02, d: .18, g: .22, room: .2 }); },
+    // profit
+    "profit.tick": () => { tone("profit", 2350 + Math.random() * 300, { d: .03, g: .13, room: .05 }); },
+    "profit.high": () => { [0, 1, 2].forEach(k => tone("profit", note(15 + k * 2), { at: k * .035, d: .2, g: .1, room: .35 })); },
+    // rewards: the bright moments
+    "reward.pace": m => { for (let k = 0; k <= Math.max(1, m | 0); k++) bell("reward", note(10 + k * 2), k * .09, .22, .6); },
+    "reward.medal": m => { const n = 1 + Math.max(1, m | 0); for (let k = 0; k < n; k++) bell("reward", note(7 + k * 2), k * .13, .4, 1.1); noise("reward", { at: n * .13, d: .5, g: .06, bp: 8000, q: .5, room: .4 }); },
+    "reward.badge": () => { bell("reward", note(14), 0, .18, .5); bell("reward", note(16), .07, .15, .5); },
+    "reward.unlock": () => { noise("reward", { d: .22, g: .1, bp: 1200, sweep: 4, q: .7, room: .2 }); [0, 2, 4, 5].forEach((s, k) => bell("reward", note(9 + s), .05 + k * .07, .3, .7)); },
+    "reward.discover": () => { for (let k = 0; k < 6; k++) tone("reward", note(14 + Math.floor(Math.random() * 6)), { at: k * .05, d: .3, g: .12, room: .45 }); },
+    // warnings
+    "warn.out": () => { tone("warn", note(4), { type: "triangle", d: .18, g: .3, lp: 1200, room: .1 }); tone("warn", note(2), { type: "triangle", at: .12, d: .3, g: .28, lp: 1000, room: .1 }); },
+    "warn.liquidated": () => { noise("warn", { d: .35, g: .35, bp: 300, q: .7, room: .2 }); tone("warn", note(0) / 2, { d: .9, g: .45, lp: 500, glide: .7, room: .25 }); },
+  };
+  function play(name, arg) {
+    if (!R[name]) throw new Error("unknown sound " + name);
+    if (LOG) window.__snd.push(name);
+    if (!ready()) return;
+    R[name](arg);
+  }
+  // the whole interface sounds the same way: one delegated listener, no per-button wiring
+  function wireUI() {
+    document.addEventListener("pointerdown", e => { start(); const b = e.target.closest("button"); if (b && b.disabled) play("ui.deny"); }, true);
+    document.addEventListener("keydown", start, true);
+    document.addEventListener("click", e => {
+      const b = e.target.closest("button, summary, .mcard, .tnode, [data-debrief]"); if (!b || b.disabled) return;
+      if (b.closest(".modesw")) play("ui.tab");
+      else if (b.classList.contains("primary") || b.id === "play") play("ui.primary");
+      else play("ui.click");
+    }, true);
+    document.addEventListener("change", e => {
+      const t = e.target;
+      if (t.type === "checkbox") play(t.checked ? "ui.on" : "ui.off");
+      else if (t.tagName === "SELECT") play("ui.click");
+    }, true);
+    document.addEventListener("input", e => {
+      const t = e.target; if (t.type !== "range" || t.id === "sndVol" || !throttle("slider", 35)) return;
+      play("ui.slider", (t.value - t.min) / ((t.max - t.min) || 1));
+    }, true);
+  }
+  function wireControls() {
+    const btn = $("sndBtn"), vol = $("sndVol");
+    const paint = () => { btn.setAttribute("aria-pressed", cfg.on); btn.classList.toggle("off", !cfg.on); vol.value = cfg.vol; };
+    btn.onclick = () => { cfg.on = !cfg.on; store.set("taperunner.sound", cfg); applyVol(); paint(); };
+    vol.oninput = () => { cfg.vol = +vol.value; if (cfg.vol > 0) cfg.on = true; store.set("taperunner.sound", cfg); applyVol(); paint(); if (throttle("volprev", 120)) play("ui.slider", cfg.vol / 100); };
+    $("sndPrev").onclick = () => preview();
+    paint();
+  }
+  // one of every category, in order, so the palette can be judged as a whole
+  function preview() {
+    const seq = [["ui.click"], ["ui.tab"], ["ui.on"], ["ui.slider", .5], ["ui.open"], ["tape.tick", true], ["tape.tick", false], ["signal.lamp", 0], ["signal.ping", 1],
+      ["trade.entry", "LONG"], ["trade.entry", "SHORT"], ["trade.win", .001], ["trade.win", .01], ["trade.loss"], ["trade.stop"], ["trade.lock"],
+      ["profit.tick"], ["profit.tick"], ["profit.high"], ["reward.badge"], ["reward.pace", 2], ["reward.medal", 3], ["reward.unlock"], ["reward.discover"], ["warn.out"], ["warn.liquidated"], ["ui.deny"]];
+    seq.forEach(([n, a], k) => setTimeout(() => play(n, a), k * 520));
+  }
+  // render sounds without speakers and measure each one's peak (dBFS) at full volume: keeps the mix honest
+  async function measure(list) {
+    const live = { ac, out, verb, buses, noiseBuf, cfg }, gap = 1.6, sr = 44100;
+    cfg = { on: true, vol: 100 }; buses = {};
+    start(new OfflineAudioContext(1, Math.ceil(sr * gap * list.length), sr));
+    list.forEach(([n, a], k) => { OFF = k * gap; R[n](a); });
+    OFF = 0;
+    const buf = await ac.startRendering(), d = buf.getChannelData(0);
+    ({ ac, out, verb, buses, noiseBuf, cfg } = live);
+    return list.map(([n, a], k) => { let pk = 0; for (let i = Math.floor(k * gap * sr); i < Math.floor((k + 1) * gap * sr) && i < d.length; i++) pk = Math.max(pk, Math.abs(d[i]));
+      return { sound: n + (a !== undefined ? "(" + a + ")" : ""), dbfs: +(20 * Math.log10(pk || 1e-9)).toFixed(1) }; });
+  }
+  if (LOG) window.__SNDTEST = measure;                  // tests only
+  return { play, wireUI, wireControls, throttle, preview, measure };
+})();
+
 
 let maps = [];                     // loaded map data (fetched on demand from maps/<id>.json)
 let MAP_INDEX = [];
@@ -1350,6 +1515,7 @@ async function loadMapData(id){
 
 let M, BASE, P, RUN, HITS = [], prefix, runNo = 1, engine = "lab";
 let pos = 0, playing = false, speed = 5, holdUntil = 0, lastT = 0, lastShown = -1, completed = false;
+let runHigh = 0;
 let hoverX = null, ahoverX = null, dispNet = 0, lastTradeCount = 0, particles = [], ghost = null, seenHits = new Set();
 let yLo = -1, yHi = 1;
 let HILITE = { trades: [], bars: null };   // debrief "show me": trades/bars outlined in gold
@@ -1559,7 +1725,7 @@ function restart(keepPlaying){
     ticks.appendChild(t);
   });
   $("grade").hidden = true; completed = false; crossed = []; HILITE = { trades: [], bars: null }; maxReached = W(); seenHits = new Set(); particles = []; pops = []; prevBits = {L:-1, S:-1};
-  pos = W(); dispNet = 0; lastTradeCount = 0; yLo = -notional()*.002; yHi = notional()*.002;
+  pos = W(); dispNet = 0; lastTradeCount = 0; runHigh = 0; yLo = -notional()*.002; yHi = notional()*.002;
   lastShown = -1; rebuildLog(); paintRail(pos, null); render(true);
   setPlaying(wasPlaying); paintTransport();
 }
@@ -1633,6 +1799,7 @@ function updatePanel(c){
   let pk=0, dd=0; for (let j=0;j<=k;j++){ pk=Math.max(pk,RUN.eq[j]); dd=Math.min(dd,RUN.eq[j]-pk); }
   $("dd").textContent = dd<0 ? "-$"+fmt(-dd) : "$0.00";
   $("streak").textContent = streak>=2 ? streak+" wins in a row" : "";
+  if (playing && RUN.eq[k] > runHigh + notional()*.001){ if (runHigh > 0 && SND.throttle("high", 1500)) SND.play("profit.high"); runHigh = RUN.eq[k]; }
   $("scrub").value = c;
   // trade closed since last frame -> feedback
   if (w+l > lastTradeCount && c>=lastShown){
@@ -1640,7 +1807,7 @@ function updatePanel(c){
     const odo = $("odo"); odo.classList.remove("pop"); void odo.offsetWidth; odo.classList.add("pop");
     burst(t.pnl>0 ? C.good : C.bad, t.pnl>0 ? 26 : 10);
     if (t.pnl<=0 && !reduceMotion){ const a=$("arena"); a.classList.remove("shake"); void a.offsetWidth; a.classList.add("shake"); }
-    sfx(t.pnl>0 ? "win" : "loss");
+    SND.play(t.pnl>0 ? "trade.win" : t.reason==="STOP" ? "trade.stop" : "trade.loss", Math.abs(t.pnl)/notional());
   }
   lastTradeCount = w+l;
   // checkpoints
@@ -1648,15 +1815,15 @@ function updatePanel(c){
   HITS.forEach(h => { if (h.i<=c && !seenHits.has(h.id)){ seenHits.add(h.id); fresh.add(h.id); } });
   if (fresh.size && playing){
     const h = HITS.find(x => fresh.has(x.id) && x.i===Math.max(...HITS.filter(y=>fresh.has(y.id)).map(y=>y.i)));
-    toast(h.title, h.sub); burst(C.gold, 40); sfx("checkpoint");
+    toast(h.title, h.sub); burst(C.gold, 40); SND.play("reward.badge");
   }
   paintRail(c, fresh);
   // medal lines crossed / lost (campaign): only the final profit counts, so this is a live warning
   if (MODE==="campaign" && CONTRACT && CONTRACT.targets && runStarted && playing){
     // announce each medal level once per run; only falling out of the medals entirely is worth a warning
     const md = Core.medalOf(realizedAt(c), CONTRACT.targets, RUN.bh[Math.max(0, kOf(c))]), was = crossed.medal || 0;
-    if (md > (crossed.best || 0)){ crossed.best = md; toast(Core.MEDALS[md]+" pace", "hold it to the end to keep it"); burst(MEDAL_COL[md], 30); sfx("checkpoint"); }
-    else if (md === 0 && was > 0) toast("Out of the medals", "win it back before the close");
+    if (md > (crossed.best || 0)){ crossed.best = md; toast(Core.MEDALS[md]+" pace", "hold it to the end to keep it"); burst(MEDAL_COL[md], 30); SND.play("reward.pace", md); }
+    else if (md === 0 && was > 0) { toast("Out of the medals", "win it back before the close"); SND.play("warn.out"); }
     crossed.medal = md;
   }
 }
@@ -1666,6 +1833,7 @@ function paintSide(s, b, n, off, k, need, disabled){
   const lamps = $("lamps"+s).children, meter = $("meter"+s).children;
   const prev = prevBits[s], animate = playing && speed<=60 && prev>=0 && !reduceMotion;
   if (animate && (b & ~prev)){
+    if (SND.throttle("lamp", 90)) SND.play("signal.lamp", Math.max(0, Math.floor(Math.log2((b & ~prev) || 1))));
     for (let j=0;j<n;j++) if (((b & ~prev)>>j)&1){ const sp=document.createElement("span"); sp.className="plus"; sp.textContent="+1"; lamps[j].appendChild(sp); setTimeout(()=>sp.remove(), 950); }
     if (popc(b) > popc(prev)){ const el=$("score"+s); el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
   }
@@ -1813,6 +1981,8 @@ function spawnPops(from, to, t){
   if (!$("pops").checked || !RUN.ie) return;
   for (let i=from;i<=to;i++) (RUN.ie.get(i)||[]).forEach(o => {
     if (speed>=240 && !o.major) return;
+    if (/TRAIL|BREAKEVEN/.test(o.t)) SND.play("trade.lock");
+    else if (SND.throttle("ping", 160)) SND.play("signal.ping", o.big ? 3 : o.major ? 2 : 1);
     pops.push(Object.assign({i, born:t, life:o.banner ? 1.8 : o.big ? 1.6 : 1.25}, o));
   });
   if (pops.length > 14) pops = pops.slice(-14);
@@ -2185,18 +2355,6 @@ function toast(title, sub){
 
 /* ---------------- sound (off by default) ---------------- */
 let AC = null;
-function sfx(kind){
-  if (!$("sound").checked) return;
-  try {
-    AC = AC || new (window.AudioContext||window.webkitAudioContext)();
-    const seq = { open:[[520,.06]], win:[[523,.07],[659,.07],[784,.12]], loss:[[196,.16]], checkpoint:[[659,.06],[784,.06],[988,.06],[1319,.18]], grade:[[392,.1],[523,.1],[659,.1],[784,.3]] }[kind];
-    let t0 = AC.currentTime;
-    seq.forEach(([f,d]) => { const o = AC.createOscillator(), g = AC.createGain();
-      o.type = kind==="loss" ? "sawtooth" : "triangle"; o.frequency.value = f;
-      g.gain.setValueAtTime(.0001,t0); g.gain.exponentialRampToValueAtTime(.12,t0+.01); g.gain.exponentialRampToValueAtTime(.0001,t0+d);
-      o.connect(g).connect(AC.destination); o.start(t0); o.stop(t0+d+.02); t0 += d*.9; });
-  } catch(e) {}
-}
 
 /* ---------------- grading & best runs ---------------- */
 function gradeOf(net, bh){
@@ -2216,7 +2374,7 @@ function finish(){
   $("gradeLetter").textContent = g; $("gradeLetter").style.color = col;
   $("gradeText").textContent = "Net "+signed(net)+" after fees · "+n+" trades · "+(n?Math.round(RUN.wins/n*100):0)+"% wins · worst dip "+(RUN.maxDD<0?"-$"+fmt(-RUN.maxDD):"$0")+". Buy & hold: "+signed(bh)+".";
   const gr = $("grade"); gr.hidden = false; gr.classList.remove("stamp"); void gr.offsetWidth; gr.classList.add("stamp");
-  sfx("grade");
+  SND.play("reward.medal", 2);
   if (engine==="lab") saveBestRun();
 }
 function saveBestRun(){
@@ -2281,7 +2439,7 @@ function render(force){
 function draw(t=performance.now(), dt=0){ drawChart(t); drawArena(t, dt); }
 function flash(e){
   const f = $("flash");
-  if (e.type==="open"){ f.style.color = e.side==="LONG"?C.long:C.short; f.innerHTML = e.side+" "+e.score+"/"+lampNames()[0].length+" opened<small>$"+fmt(e.price)+" · stop $"+fmt(e.stop)+" · "+e.regime+"</small>"; sfx("open"); }
+  if (e.type==="open"){ f.style.color = e.side==="LONG"?C.long:C.short; f.innerHTML = e.side+" "+e.score+"/"+lampNames()[0].length+" opened<small>$"+fmt(e.price)+" · stop $"+fmt(e.stop)+" · "+e.regime+"</small>"; }
   else { f.style.color = e.pnl>=0?C.good:C.bad; f.innerHTML = "Closed "+signed(e.pnl)+"<small>"+e.side+" · "+e.reason+" · "+(e.exit_i-e.entry_i)+" bars</small>"; }
   f.classList.add("on"); clearTimeout(flash.t); flash.t = setTimeout(()=>f.classList.remove("on"), 1100);
 }
@@ -2298,8 +2456,10 @@ function frame(t){
     const after = Math.floor(pos);
     for (let i=before+1;i<=after;i++){
       const ev = (RUN.byI.get(i)||[]).find(e=>e.type==="open"||e.type==="close");
+      if (ev && ev.type==="open") SND.play("trade.entry", ev.side);
       if (ev && $("slow").checked){ pos = i; flash(ev); holdUntil = t + (reduceMotion?600:1100); break; }
     }
+    if (after > before && speed <= 20 && SND.throttle("tape", 150)){ const q = M.candles[after]; SND.play("tape.tick", q[4] >= q[1]); }
     if (RUN.bust && pos >= RUN.bust.i && !completed){ pos = RUN.bust.i; liquidated(); }
     spawnPops(before+1, Math.floor(pos), t);
     maxReached = Math.max(maxReached, pos);
@@ -2312,7 +2472,7 @@ function frame(t){
 function liquidated(){
   const f = $("flash"); f.style.color = C.bad; f.innerHTML = "Liquidated<small>drawdown limit hit, the run is over</small>";
   f.classList.add("on"); clearTimeout(flash.t); flash.t = setTimeout(()=>f.classList.remove("on"), 1800);
-  const a=$("arena"); a.classList.remove("shake"); void a.offsetWidth; a.classList.add("shake"); sfx("loss");
+  const a=$("arena"); a.classList.remove("shake"); void a.offsetWidth; a.classList.add("shake"); SND.play("warn.liquidated");
 }
 function setPlaying(p){ playing = p; if (p) $("grade").hidden = true; paintTransport(); }
 
@@ -2339,7 +2499,6 @@ $("reset").onclick = () => {
   if (MODE==="campaign"){ if (labFrozen) return; campP = freshCampP(M); campP.strategy = st; P = campP; syncLab(); runNo++; return restart(false); }
   P = TapeSim.defaults(M); P.strategy = st; syncLab(); runNo++; restart(playing); };
 $("showBlocked").onchange = () => rebuildLog();
-$("sound").onchange = () => { if ($("sound").checked) sfx("open"); };
 $("file").onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   try {
@@ -2689,7 +2848,7 @@ function renderInfo(){
       '<p class="muted">Or unlock it now without finding it' + (price > n.cost ? ' (found ones are cheaper: $' + n.cost + ')' : '') + '.</p>' +
       '<div class="row">' + (st === "affordable" ? '<button class="btn primary" id="actGo">Unlock now · $' + price + '</button>' : '<button class="btn" disabled>Need $' + fmt(price - SAVE.bank, 0) + ' more</button>') + '</div>';
     const go = $("actGo");
-    if (go) go.onclick = () => { Core.buy(CAMP, SAVE, n); persist(); sfx("checkpoint"); toast("Unlocked", n.title.replace(/^\w+: /, "")); renderTree(); unlockTours(); };
+    if (go) go.onclick = () => { Core.buy(CAMP, SAVE, n); persist(); SND.play("reward.unlock"); toast("Unlocked", n.title.replace(/^\w+: /, "")); renderTree(); unlockTours(); };
     return;
   }
   if (st === "hidden") {
@@ -2758,7 +2917,7 @@ function renderInfo(){
     if (n.kind === "exam") return takeExam(n);
     if (n.kind === "finale") { if (st !== "owned") { Core.buy(CAMP, SAVE, n); persist(); } return ending(); }
     if (st === "owned" && m) return enterContract(m);
-    Core.buy(CAMP, SAVE, n); persist(); sfx("checkpoint");
+    Core.buy(CAMP, SAVE, n); persist(); SND.play("reward.unlock");
     renderTree();
   };
 }
@@ -2832,7 +2991,8 @@ function campFinish(){
     [["Levels", () => { closeModal(); selNode = null; showCampaign("markets"); }, true], ["Unlocks", () => { closeModal(); selNode = null; showCampaign("unlocks"); }], ["Play again · $" + m.entryFee, () => { closeModal(); runNo++; enterContract(m, true); }]]);
   countUp($("bankCount"), before, SAVE.bank);
   wireDebrief();
-  if (res.medal && res.bounty) { burst(MEDAL_COL[res.medal], 50); sfx("grade"); } else if (res.bust) sfx("loss");
+  if (res.medal && res.bounty) { burst(MEDAL_COL[res.medal], 50); SND.play("reward.medal", res.medal); } else if (res.bust) SND.play("warn.liquidated");
+  if (found.length) setTimeout(() => SND.play("reward.discover"), 700);
 }
 // debrief: findings with a "show me" that jumps the chart to the trades they're about
 let DEBRIEF = [];
@@ -2860,7 +3020,7 @@ function countUp(el, a, b){
   if (!el) return;
   const t0 = performance.now(), dur = reduceMotion ? 0 : 900;
   const step = t => { const f = dur ? Math.min(1, (t - t0) / dur) : 1, v = a + (b - a) * (1 - Math.pow(1 - f, 3));
-    el.textContent = "$" + fmt(v, 0); if (f < 1) requestAnimationFrame(step); };
+    el.textContent = "$" + fmt(v, 0); if (f < 1) { if (b > a && SND.throttle("count", 70)) SND.play("profit.tick"); requestAnimationFrame(step); } };
   requestAnimationFrame(step);
 }
 function paintTransport(){
@@ -2964,7 +3124,7 @@ function examLegDone(){
     '<div class="payout"><div><span>Reward</span><b>$' + reward + '</b></div><div><span>Bank</span><b id="bankCount">$' + fmt(before, 0) + '</b></div><div><span>Next try</span><b>$' + Core.examFee(CAMP, SAVE, node) + '</b></div></div>' + discoveredHtml(found),
     [["Levels", () => { closeModal(); EXAM = null; showCampaign("markets"); selNode = node.id; renderTree(); }, true]]);
   countUp($("bankCount"), before, SAVE.bank);
-  if (v.pass) { burst(C.gold, 60); sfx("grade"); } else sfx("loss");
+  if (v.pass) { burst(C.gold, 60); SND.play("reward.medal", 3); } else SND.play("warn.out");
 }
 
 /* ---------- ending ---------- */
@@ -3026,10 +3186,11 @@ function modal(html, buttons){
   $("mbox").innerHTML = html + '<div class="row mrow"></div>';
   const row = $("mbox").querySelector(".mrow");
   buttons.forEach(([label, fn, primary]) => { const b = document.createElement("button"); b.className = "btn" + (primary ? " primary" : ""); b.textContent = label; b.onclick = fn; row.appendChild(b); });
+  if ($("modal").hidden) SND.play("ui.open");
   $("modal").hidden = false;
   const first = row.querySelector("button"); if (first) first.focus();
 }
-function closeModal(){ $("modal").hidden = true; pumpCoach(); }
+function closeModal(){ if (!$("modal").hidden) SND.play("ui.close"); $("modal").hidden = true; pumpCoach(); }
 
 /* ---------- boot ---------- */
 function campInit(){
@@ -3234,7 +3395,7 @@ function start(data){
   if (data.engine) engine = data.engine;
   if (data.runNo) runNo = data.runNo;
   const ix = Math.min(data.map||0, MAP_INDEX.length-1);
-  buildLab(); buildRail(); minInit(); fillMaps(ix); resize(); glossInit(); wordsInit();
+  buildLab(); buildRail(); minInit(); fillMaps(ix); resize(); glossInit(); wordsInit(); SND.wireUI(); SND.wireControls();
   if (campInit()){ requestAnimationFrame(t => { lastT = t; frame(t); }); return; }
   if (data.P) P = data.P;
   selectMap(ix);
